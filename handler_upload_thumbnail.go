@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -36,28 +36,36 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	r.ParseMultipartForm(maxMemory)
 
-	file, _, err := r.FormFile("thumbnail")
+	file, header, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "unable to parse form file", err)
 		return
 	}
 	defer file.Close()
 
-	mediaType := r.Header.Get("Content-Type")
-
-	imageData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "unable to read image data from file", err)
+	mediaType := header.Header.Get("Content-Type")
+	if mediaType == "" {
+		respondWithError(w, http.StatusBadRequest, "missing Content-Type for thumbnail", nil)
 		return
 	}
 
-	imageDataAsString := base64.StdEncoding.EncodeToString(imageData)
+	assetPath := getAssetPath(videoID, mediaType)
+	assetDiskPath := cfg.getAssetDiskPath(assetPath)
 
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, imageDataAsString)
+	dst, err := os.Create(assetDiskPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "unable to create file on server", err)
+		return
+	}
+	defer dst.Close()
+	if _, err = io.Copy(dst, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error saving file", err)
+		return
+	}
 
 	videoMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "unable to get video metadata from database", err)
+		respondWithError(w, http.StatusInternalServerError, "unable to get video metadata from database", err)
 		return
 	}
 	if videoMetadata.UserID != userID {
@@ -65,7 +73,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	videoMetadata.ThumbnailURL = &dataURL
+	url := cfg.getAssetURL(assetPath)
+	videoMetadata.ThumbnailURL = &url
 
 	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {

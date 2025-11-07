@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -43,13 +45,20 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	mediaType := header.Header.Get("Content-Type")
-	if mediaType == "" {
-		respondWithError(w, http.StatusBadRequest, "missing Content-Type for thumbnail", nil)
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type", err)
 		return
 	}
 
-	assetPath := getAssetPath(videoID, mediaType)
+	acceptedMediaTypes := []string{"image/jpeg", "image/png"}
+	if slices.Contains(acceptedMediaTypes, mediaType) == false {
+		respondWithError(w, http.StatusBadRequest, "invalid file type", err)
+		return
+	}
+
+	randomVideoIDString := create32ByteHex()
+	assetPath := getAssetPath(randomVideoIDString, mediaType)
 	assetDiskPath := cfg.getAssetDiskPath(assetPath)
 
 	dst, err := os.Create(assetDiskPath)

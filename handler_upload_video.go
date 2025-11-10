@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -78,6 +83,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	processedVideoPath, err := processVideoForFastStart(f.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to process video", err)
+		return
+	}
+
+	processedVideo, err := os.Open(processedVideoPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to open processed video", err)
+		return
+	}
+	defer processedVideo.Close()
+
 	aspectRatio, err := getVideoAspectRatio(f.Name())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to get aspect ratio", err)
@@ -102,9 +120,9 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
-		Bucket:      aws.String("tubely-89245"),
+		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(prefix + "/" + assetPath),
-		Body:        f,
+		Body:        processedVideo,
 		ContentType: aws.String(mediaType),
 	})
 	if err != nil {
@@ -119,6 +137,42 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update video", err)
 		return
 	}
+	signedVideoMetadata, err := cfg.dbVideoToSignedVideo(videoMetadata)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to sign video", err)
+		return
+	}
 
-	respondWithJSON(w, http.StatusOK, videoMetadata)
+	respondWithJSON(w, http.StatusOK, signedVideoMetadata)
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputFilePath := filePath + ".processing"
+
+	command := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+
+	var stdErr bytes.Buffer
+	command.Stderr = &stdErr
+
+	err := command.Run()
+	if err != nil {
+		log.Print(stdErr.String())
+		return "", err
+	}
+
+	return outputFilePath, nil
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	presignClient := s3.NewPresignClient(s3Client)
+
+	presignedHttpRequest, err := presignClient.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expireTime))
+	if err != nil {
+		return "", err
+	}
+
+	return presignedHttpRequest.URL, nil
 }

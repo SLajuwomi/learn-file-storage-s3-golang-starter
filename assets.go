@@ -22,7 +22,7 @@ func (cfg apiConfig) ensureAssetsDir() error {
 }
 
 func (cfg *apiConfig) getObjectURL(key string) string {
-	objectURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+	objectURL := fmt.Sprintf("%s,%s", cfg.s3Bucket, key)
 	return objectURL
 }
 
